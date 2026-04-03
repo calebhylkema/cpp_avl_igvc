@@ -36,13 +36,11 @@ igvc_ros2_ws/
 │   │   └── package.xml / CMakeLists.txt
 │   │
 │   └── igvc_nav/             # Autonomous navigation — SMAC 2D + MPPI
-│       ├── src/cmd_vel_bridge.cpp    # /cmd_vel → /igvc/motor_cmd
 │       ├── config/
-│       │   ├── nav2_params.yaml      # Full Nav2 stack parameters
-│       │   └── bridge_params.yaml    # Kinematics parameters
+│       │   └── nav2_params.yaml      # Full Nav2 stack parameters
 │       ├── launch/
-│       │   ├── nav.launch.py         # Full Nav2 stack + cmd_vel_bridge + serial_bridge
-│       │   └── bridge_only.launch.py # cmd_vel_bridge + serial_bridge only
+│       │   ├── nav.launch.py         # Full Nav2 stack + igvc_control
+│       │   └── bridge_only.launch.py # igvc_control only (Nav2 running separately)
 │       ├── maps/
 │       └── package.xml / CMakeLists.txt
 │
@@ -70,24 +68,24 @@ FlexCAN_T4 is fetched automatically from GitHub on first build.
 
 ## Architecture
 
-**Open-loop (legacy):**
+**Open-loop (legacy — teleop only):**
 ```
-[igvc_teleop]  keyboard → /igvc/motor_cmd ──┐
-                                             ├──► [igvc_motor_driver/serial_bridge] ──► Teensy
-[igvc_nav]  /cmd_vel → /igvc/motor_cmd ─────┘
+[igvc_teleop]  keyboard → /igvc/motor_cmd → [igvc_motor_driver/serial_bridge] → Teensy
 ```
 
-**Closed-loop (ros2_control — preferred):**
+**Closed-loop (ros2_control — used by Nav2):**
 ```
-[teleop / Nav2]  /cmd_vel
-        └──► [diff_drive_controller]  ──► igvc_hardware (serial) ──► Teensy
-                    │                           ▲
-                    │                           │ E <rpm_a> <rpm_b>
-                    ▼                           │
-              /odom  /tf               encoder feedback from SPARK MAX
+[Nav2 MPPI]  /cmd_vel_nav
+    └─► velocity_smoother
+          └─► /diff_drive_controller/cmd_vel_unstamped
+                └─► [diff_drive_controller] ──► igvc_hardware (serial) ──► Teensy
+                            │                           ▲
+                            │                           │ E <rpm_a> <rpm_b>
+                            ▼                           │
+                      /odom  /tf               encoder feedback from SPARK MAX
 ```
 
-`igvc_control` owns `/dev/ttyACM0` in closed-loop mode. The legacy `serial_bridge` path is still available but should not run at the same time.
+`igvc_control` owns `/dev/ttyACM0` in closed-loop mode. The legacy `serial_bridge` path (`igvc_teleop`) should not run at the same time.
 
 ---
 
@@ -112,10 +110,10 @@ ros2 launch igvc_teleop teleop.launch.py serial_port:=/dev/ttyUSB0
 ### Autonomous navigation (SMAC 2D + MPPI)
 
 ```bash
-# Full Nav2 stack + Teensy bridge
+# Full Nav2 stack + igvc_control (ros2_control + diff_drive_controller)
 ros2 launch igvc_nav nav.launch.py map:=/path/to/course.yaml
 
-# Bridge only (if running Nav2 separately)
+# igvc_control only (if running Nav2 separately)
 ros2 launch igvc_nav bridge_only.launch.py
 ```
 
@@ -182,15 +180,9 @@ CAN ID mapping on Teensy:
 
 ### Purpose
 
-Autonomous navigation stack. Bridges Nav2 MPPI `/cmd_vel` output to the Teensy serial
-protocol. Uses SMAC 2D planner for global paths and MPPI for smooth trajectory tracking.
-
-### cmd_vel_bridge node
-
-Subscribes to `/cmd_vel` (smoothed by `velocity_smoother`), converts using diff-drive
-kinematics, and writes `M <left_duty> <right_duty>\n` to the Teensy — identical format
-to `igvc_teleop`. Includes a watchdog: if no `/cmd_vel` arrives within `cmd_timeout`
-seconds (default 0.5 s), it sends `S\n` to stop the robot.
+Autonomous navigation stack — config-only package (no C++ nodes). Uses SMAC 2D planner
+for global paths and MPPI for smooth trajectory tracking. Motor control is handled by
+`igvc_control` (ros2_control + `diff_drive_controller`).
 
 ### Topic flow
 
@@ -198,28 +190,26 @@ seconds (default 0.5 s), it sends `S\n` to stop the robot.
 Nav2 MPPI controller
   └─► /cmd_vel_nav (raw)
         └─► velocity_smoother
-              └─► /cmd_vel (smoothed)
-                    └─► igvc_cmd_vel_bridge
-                          └─► Teensy serial: M <left> <right>
-                          └─► /igvc/motor_cmd  (monitoring)
+              └─► /diff_drive_controller/cmd_vel_unstamped
+                    └─► diff_drive_controller (igvc_control)
+                          └─► igvc_hardware → Teensy serial
 ```
 
-### Key parameters to calibrate (`config/bridge_params.yaml`)
+### Key parameters to calibrate
 
-| Parameter          | Default | Notes                                      |
+| Parameter          | Default | Location / Notes                           |
 |--------------------|---------|--------------------------------------------|
-| `wheel_base`       | `0.508` | Center-to-center wheel distance (meters)   |
-| `max_linear_speed` | `1.0`   | m/s at duty=1.0 — calibrate empirically    |
-| MPPI `vx_max`      | `0.5`   | Max forward speed sent to controller       |
-| `robot_radius`     | `0.35`  | In nav2_params.yaml — conservative margin  |
+| MPPI `vx_max`      | `0.5`   | `nav2_params.yaml` — max forward speed     |
+| `robot_radius`     | `0.35`  | `nav2_params.yaml` — conservative margin   |
+| lidar topic        | `/scan` | `nav2_params.yaml` — search `topic: /scan` |
+| odom topic         | —       | `nav2_params.yaml` — search `odom_topic`   |
 
 ### Things to configure before competition
 
-1. Set your actual `wheel_base` in `bridge_params.yaml`
-2. Calibrate `max_linear_speed` (drive at full nav speed, measure m/s)
-3. Set your lidar topic in `nav2_params.yaml` (search `topic: /scan`)
-4. Set your odometry topic (search `odom_topic`)
-5. Place your map YAML in `maps/` and pass it at launch
+1. Set your lidar topic in `nav2_params.yaml` (search `topic: /scan`)
+2. Set your odometry topic (search `odom_topic`)
+3. Place your map YAML in `maps/` and pass it at launch
+4. Tune MPPI `vx_max` for desired autonomous speed
 
 ---
 
@@ -260,7 +250,7 @@ ros2 launch igvc_control control.launch.py serial_port:=/dev/ttyUSB0
 
 - **ROS2 Humble** (`/opt/ros/humble/`)
 - `igvc_teleop`: `rclcpp`, `std_msgs`, POSIX serial/terminal
-- `igvc_nav`: `rclcpp`, `geometry_msgs`, `std_msgs`, POSIX serial; Nav2 full stack
+- `igvc_nav`: Nav2 full stack, `igvc_control`
 - `igvc_control`: `rclcpp`, `hardware_interface`, `pluginlib`, `controller_manager`, `diff_drive_controller`, `xacro`
 
 ---

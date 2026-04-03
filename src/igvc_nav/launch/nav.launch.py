@@ -2,16 +2,15 @@
 igvc_nav — nav.launch.py — AVL IGVC 2026
 
 Launches the full autonomous navigation stack:
-  • map_server + AMCL         (localisation)
-  • SMAC 2D planner           (global path planning)
-  • MPPI controller           (local trajectory control)
-  • smoother_server           (path smoothing)
-  • behavior_server           (recovery behaviours)
-  • bt_navigator              (mission-level BT)
-  • waypoint_follower
-  • velocity_smoother
-  • igvc_cmd_vel_bridge       (converts /cmd_vel → /igvc/motor_cmd)
-  • igvc_raw_control_old/serial_bridge     (owns serial port → writes to Teensy)
+  - map_server + AMCL         (localisation)
+  - SMAC 2D planner           (global path planning)
+  - MPPI controller            (local trajectory control)
+  - smoother_server           (path smoothing)
+  - behavior_server           (recovery behaviours)
+  - bt_navigator              (mission-level BT)
+  - waypoint_follower
+  - velocity_smoother
+  - igvc_control              (ros2_control + diff_drive_controller + Teensy serial)
 
 Launch arguments:
   map           Path to map YAML file        (default: empty)
@@ -26,15 +25,16 @@ Example:
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
 
-    nav_pkg   = get_package_share_directory("igvc_nav")
-    hw_pkg    = get_package_share_directory("igvc_raw_control_old")
+    nav_pkg     = get_package_share_directory("igvc_nav")
+    control_pkg = get_package_share_directory("igvc_control")
 
     # ── Launch arguments ──────────────────────────────────────────────────────
     map_arg = DeclareLaunchArgument(
@@ -56,8 +56,15 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     params_file  = LaunchConfiguration("params_file")
     map_yaml     = LaunchConfiguration("map")
-    serial_port  = LaunchConfiguration("serial_port")
     sim_param    = {"use_sim_time": use_sim_time}
+
+    # ── igvc_control (ros2_control + diff_drive_controller + Teensy) ──────────
+    control_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(control_pkg, "launch", "control.launch.py")
+        ),
+        launch_arguments={"serial_port": LaunchConfiguration("serial_port")}.items(),
+    )
 
     # ── Nav2 nodes ────────────────────────────────────────────────────────────
     map_server = Node(
@@ -69,12 +76,16 @@ def generate_launch_description():
         package="nav2_amcl", executable="amcl", name="amcl",
         output="screen",
         parameters=[params_file, sim_param],
+        remappings=[("odom", "/diff_drive_controller/odom")],
     )
     controller_server = Node(
         package="nav2_controller", executable="controller_server",
         name="controller_server", output="screen",
         parameters=[params_file, sim_param],
-        remappings=[("cmd_vel", "cmd_vel_nav")],
+        remappings=[
+            ("cmd_vel", "cmd_vel_nav"),
+            ("odom", "/diff_drive_controller/odom"),
+        ],
     )
     velocity_smoother = Node(
         package="nav2_velocity_smoother", executable="velocity_smoother",
@@ -82,8 +93,8 @@ def generate_launch_description():
         parameters=[params_file, sim_param],
         remappings=[
             ("cmd_vel",          "cmd_vel_nav"),
-            ("cmd_vel_smoothed", "cmd_vel"),
-            ("odom",             "/odom"),
+            ("cmd_vel_smoothed", "/diff_drive_controller/cmd_vel_unstamped"),
+            ("odom",             "/diff_drive_controller/odom"),
         ],
     )
     smoother_server = Node(
@@ -130,29 +141,11 @@ def generate_launch_description():
                     ]}],
     )
 
-    # ── IGVS nodes ────────────────────────────────────────────────────────────
-    # Converts /cmd_vel (Twist) → /igvc/motor_cmd (String)
-    cmd_vel_bridge = Node(
-        package="igvc_nav", executable="cmd_vel_bridge",
-        name="igvc_cmd_vel_bridge", output="screen",
-        parameters=[os.path.join(nav_pkg, "config", "bridge_params.yaml")],
-    )
-
-    # Owns the serial port → subscribes /igvc/motor_cmd → writes to Teensy
-    serial_bridge = Node(
-        package="igvc_raw_control_old", executable="serial_bridge",
-        name="igvc_serial_bridge", output="screen",
-        parameters=[
-            os.path.join(hw_pkg, "config", "serial_bridge_params.yaml"),
-            {"serial_port": serial_port},
-        ],
-    )
-
     return LaunchDescription([
         map_arg, use_sim_time_arg, params_file_arg, serial_port_arg,
+        control_launch,
         map_server, amcl,
         controller_server, velocity_smoother, smoother_server,
         planner_server, behavior_server, bt_navigator, waypoint_follower,
         lifecycle_localization, lifecycle_navigation,
-        cmd_vel_bridge, serial_bridge,
     ])
