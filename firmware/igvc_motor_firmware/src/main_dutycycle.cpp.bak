@@ -1,0 +1,155 @@
+// =============================================================================
+// igvc_motor_firmware  —  AVL IGVC 2026  —  Teensy 4.1
+// =============================================================================
+//
+// Reads motor commands from the ROS igvc_motor_driver/serial_bridge node over
+// USB serial, then sends duty-cycle setpoints to both SPARK MAX motor
+// controllers via CAN.
+//
+// Serial protocol (USB, 115200 baud) — sent by igvc_motor_driver/serial_bridge:
+//   "M <duty1> <duty2>\n"   set CAN ID 1 to duty1, CAN ID 2 to duty2  (±1.0)
+//   "S\n"                   stop both motors immediately (duty = 0.0)
+//
+// CAN wiring:
+//   CAN ID 1 → SPARK MAX A  (left  motor)
+//   CAN ID 2 → SPARK MAX B  (right motor)
+//
+//   Left/right assignment and per-motor inversion are handled entirely on the
+//   ROS side (teleop_params.yaml / bridge_params.yaml).  This firmware is a
+//   dumb relay: puts whatever float it receives onto the matching CAN ID.
+//
+// Hardware:
+//   Teensy 4.1  CAN1_TX = pin 22   CAN1_RX = pin 23
+//   Adafruit TJA1051T/3 CAN transceiver (SLNT pin must be tied to GND)
+//   SPARK MAX default CAN bus speed: 1 Mbit/s
+//
+// Safety:
+//   If no valid serial command arrives within SERIAL_TIMEOUT_MS the firmware
+//   zeros both motors.  Catches USB disconnects and ROS crashes.
+// =============================================================================
+
+#include <Arduino.h>
+#include <FlexCAN_T4.h>
+
+// ── CAN bus instance ──────────────────────────────────────────────────────────
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can;
+
+// ── SPARK MAX CAN frame ID ────────────────────────────────────────────────────
+// REV Robotics 29-bit extended CAN ID encoding:
+//   Bits 28:24  Device Type   = 2  (Motor Controller)
+//   Bits 23:16  Manufacturer  = 5  (REV Robotics)
+//   Bits 15:10  API Class     = 0  (Control)
+//   Bits  9:6   API Index     = 2  (Duty Cycle Set)
+//   Bits  5:0   Device ID     = your SPARK MAX CAN ID
+//
+//   Base (without device ID) = 0x02050080
+static const uint32_t SPARK_DUTY_BASE = (2UL << 24) | (5UL << 16) | (0UL << 10) | (2UL << 6);
+
+// Change these to match the CAN IDs set on your SPARK MAX controllers
+static const uint8_t CAN_ID_MOTOR_A = 1;   // left  motor
+static const uint8_t CAN_ID_MOTOR_B = 2;   // right motor
+
+// ── Timing ────────────────────────────────────────────────────────────────────
+static const uint32_t SERIAL_TIMEOUT_MS = 500;  // zero motors if ROS goes silent
+static const uint32_t CAN_INTERVAL_MS   = 20;   // 50 Hz — SPARK MAX needs periodic frames
+
+// ── State ─────────────────────────────────────────────────────────────────────
+static float    g_duty_a   = 0.0f;
+static float    g_duty_b   = 0.0f;
+static uint32_t g_last_cmd = 0;
+static uint32_t g_last_can = 0;
+
+static char g_buf[64];
+static int  g_buf_len = 0;
+
+// ── Non-roboRIO heartbeat — required to enable SPARK MAX outside FRC ─────────
+//    API Class 11, API Index 2, Device ID 0 (broadcast)
+//    Data: 0xFF 0xFF 0xFF 0xFF 0x00 0x00 0x00 0x00
+static const uint32_t SPARK_HEARTBEAT_ID = (2UL << 24) | (5UL << 16) | (11UL << 10) | (2UL << 6);
+
+static void sendHeartbeat()
+{
+    CAN_message_t msg;
+    msg.id             = SPARK_HEARTBEAT_ID;  // 0x02052C80
+    msg.flags.extended = 1;
+    msg.len            = 8;
+    uint8_t hb[] = {0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00};
+    memcpy(msg.buf, hb, 8);
+    Can.write(msg);
+}
+
+// ── Send one duty-cycle CAN frame to a SPARK MAX ──────────────────────────────
+static void sendDuty(uint8_t deviceId, float duty)
+{
+    CAN_message_t msg;
+    msg.id             = SPARK_DUTY_BASE | deviceId;
+    msg.flags.extended = 1;
+    msg.len            = 8;
+    memset(msg.buf, 0, 8);
+    memcpy(msg.buf, &duty, 4);  // IEEE 754 float, little-endian (bytes 4–7 reserved zero)
+    Can.write(msg);
+}
+
+// ── Process one \n-terminated line from serial ────────────────────────────────
+static void processLine(const char *line)
+{
+    if (line[0] == 'S' || line[0] == 's') {
+        g_duty_a   = 0.0f;
+        g_duty_b   = 0.0f;
+        g_last_cmd = millis();
+        return;
+    }
+
+    if ((line[0] == 'M' || line[0] == 'm') && line[1] == ' ') {
+        float d1, d2;
+        if (sscanf(line + 2, "%f %f", &d1, &d2) == 2) {
+            g_duty_a   = constrain(d1, -1.0f, 1.0f);
+            g_duty_b   = constrain(d2, -1.0f, 1.0f);
+            g_last_cmd = millis();
+        }
+    }
+}
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
+void setup()
+{
+    Serial.begin(115200);
+
+    Can.begin();
+    Can.setBaudRate(1000000);   // 1 Mbit/s — SPARK MAX default
+
+    g_last_cmd = millis();
+    g_last_can = millis();
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────────
+void loop()
+{
+    // Read serial — buffer until \n then process
+    while (Serial.available() > 0) {
+        char c = (char)Serial.read();
+        if (c == '\n') {
+            g_buf[g_buf_len] = '\0';
+            if (g_buf_len > 0) {
+                processLine(g_buf);
+            }
+            g_buf_len = 0;
+        } else if (g_buf_len < (int)(sizeof(g_buf) - 1)) {
+            g_buf[g_buf_len++] = c;
+        }
+    }
+
+    // Safety watchdog — zero motors if ROS stops sending
+    if (millis() - g_last_cmd > SERIAL_TIMEOUT_MS) {
+        g_duty_a = 0.0f;
+        g_duty_b = 0.0f;
+    }
+
+    // CAN output at 50 Hz — SPARK MAX needs periodic frames
+    if (millis() - g_last_can >= CAN_INTERVAL_MS) {
+        g_last_can = millis();
+        sendHeartbeat();
+        sendDuty(CAN_ID_MOTOR_A, g_duty_a);
+        sendDuty(CAN_ID_MOTOR_B, g_duty_b);
+    }
+}

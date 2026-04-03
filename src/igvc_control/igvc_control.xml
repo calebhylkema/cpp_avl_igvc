@@ -1,0 +1,9 @@
+<library path="igvc_hardware">
+  <class name="igvc_control/IgvcHardware"
+         type="igvc_control::IgvcHardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Serial hardware interface for AVL IGVC 2026 Teensy + SPARK MAX drivetrain
+    </description>
+  </class>
+</library>

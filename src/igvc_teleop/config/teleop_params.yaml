@@ -1,0 +1,15 @@
+igvc_teleop_node:
+  ros__parameters:
+
+    # Command send rate (Hz)
+    cmd_hz: 50
+
+    # Max velocities — must match diff_drive_controller limits
+    max_linear_vel:  0.5    # m/s
+    max_angular_vel: 2.0    # rad/s
+
+    # Speed mode levels (keys 1–4) — fraction of max velocity
+    speed_levels: [0.25, 0.50, 0.75, 1.00]
+
+    # Speed mode index to start in on launch (0 = 25%)
+    default_speed_mode: 0

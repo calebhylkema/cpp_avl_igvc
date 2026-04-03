@@ -1,0 +1,9 @@
+igvc_serial_bridge:
+  ros__parameters:
+
+    # Teensy USB serial device
+    serial_port: "/dev/ttyACM0"
+    serial_baud_rate: 115200    # must match igvc_motor_firmware
+
+    # Stop the robot if no /igvc/motor_cmd arrives within this window
+    cmd_timeout: 0.5            # seconds
