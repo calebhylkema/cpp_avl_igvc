@@ -1,6 +1,6 @@
 # =============================================================================
 # igvc_nav — Nav2 parameters  —  AVL IGVC 2026
-# Planner:    SMAC 2D (grid-based A*)
+# Planner:    SMAC Hybrid A* (SE2 — heading-aware)
 # Controller: MPPI   (Model Predictive Path Integral)
 # Robot:      differential drive, outdoor, ~0.5 m wide
 #
@@ -253,7 +253,7 @@ controller_server:
         forward_preference: true
         mode: 0
 
-# ── Planner Server (SMAC 2D) ──────────────────────────────────────────────────
+# ── Planner Server (SMAC Hybrid A*) ──────────────────────────────────────────
 planner_server:
   ros__parameters:
     use_sim_time: false
@@ -261,16 +261,27 @@ planner_server:
     planner_plugins: ["GridBased"]
 
     GridBased:
-      plugin: "nav2_smac_planner/SmacPlanner2D"
+      plugin: "nav2_smac_planner/SmacPlannerHybrid"
       tolerance: 0.5                   # goal tolerance (m)
       downsample_costmap: false
       downsampling_factor: 1
       allow_unknown: true              # allow planning through unknown space
       max_iterations: 1000000
       max_on_approach_iterations: 1000
-      max_planning_time: 2.0           # seconds
+      max_planning_time: 5.0           # seconds — hybrid is more expensive than 2D
       cost_travel_multiplier: 2.0      # steer away from high-cost areas
-      use_final_approach_orientation: false
+      reverse_penalty: 2.0             # penalise reversing
+      change_penalty: 0.0              # penalty for direction changes
+      non_straight_penalty: 1.2        # penalise non-straight motion
+      cost_penalty: 2.0                # penalty multiplier for high-cost cells
+      retrospective_penalty: 0.015
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      lookup_table_size: 20.0
+      minimum_turning_radius: 0.40     # meters — diff drive can spin in place, but
+                                       # this gives smoother, more drivable arcs
+      motion_model_for_search: "DUBIN" # forward-only arcs (use REEDS_SHEPP to allow reverse)
+      angle_quantization_bins: 72      # heading resolution: 360/72 = 5 deg
       smoother:
         max_iterations: 1000
         w_smooth: 0.3

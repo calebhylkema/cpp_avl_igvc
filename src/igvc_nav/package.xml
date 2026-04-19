@@ -3,7 +3,7 @@
 <package format="3">
   <name>igvc_nav</name>
   <version>0.1.0</version>
-  <description>AVL IGVC 2026 — autonomous navigation: SMAC 2D planner + MPPI controller</description>
+  <description>AVL IGVC 2026 — autonomous navigation: SMAC Hybrid A* planner + MPPI controller</description>
   <maintainer email="you@example.com">AVL Team</maintainer>
   <license>MIT</license>
 
