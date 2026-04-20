@@ -56,7 +56,7 @@
       <plugin>igvc_control/IgvcHardware</plugin>
       <param name="serial_port">$(arg serial_port)</param>
       <param name="gear_ratio">12.75</param>
-      <param name="max_motor_rpm">5700</param>
+      <param name="max_motor_rpm">3000</param>
       <param name="left_motor_inverted">false</param>
       <param name="right_motor_inverted">true</param>
     </hardware>

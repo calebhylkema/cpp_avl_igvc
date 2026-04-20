@@ -3,19 +3,20 @@
 // =============================================================================
 //
 // ros2_control SystemInterface for the IGVC drivetrain.
-// Owns the Teensy USB serial port.  Sends velocity commands, reads encoder RPM.
+// Owns the Teensy USB serial port.  Sends velocity commands, reads encoder
+// RPM and position feedback.
 //
 // Drivetrain: NEO Vortex → 12.75:1 gearbox → 1:1 chain → sprocket (r=0.0345m)
 //
 // Firmware serial protocol:
-//   TX: "M <duty_left> <duty_right>\n"   duty ±1.0 (mapped from wheel rad/s)
-//   TX: "S\n"                            stop
-//   RX: "E <motor_rpm_left> <motor_rpm_right>\n"   encoder feedback
+//   TX: "L<rpm> R<rpm>\n"                       motor RPM setpoints
+//   TX: "S\n"                                   stop
+//   RX: "E L<rpm> <pos> R<rpm> <pos>\n"         encoder feedback
 //
 // Conversion:
+//   motor_rpm    = wheel_rad_s * gear_ratio * 60 / (2π)
 //   wheel_rad_s  = motor_rpm / gear_ratio * 2π / 60
-//   duty         = (wheel_rad_s / max_wheel_rad_s)  clamped to ±1.0
-//   max_wheel_rad_s = max_motor_rpm / gear_ratio * 2π / 60
+//   wheel_rad    = motor_rotations / gear_ratio * 2π
 // =============================================================================
 
 #include "igvc_control/igvc_hardware.hpp"
@@ -35,7 +36,8 @@ namespace igvc_control
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-static constexpr double TWO_PI_OVER_60 = 2.0 * M_PI / 60.0;
+static constexpr double TWO_PI         = 2.0 * M_PI;
+static constexpr double TWO_PI_OVER_60 = TWO_PI / 60.0;
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -57,7 +59,7 @@ hardware_interface::CallbackReturn IgvcHardware::on_init(
                         : 12.75;
     max_motor_rpm_  = info_.hardware_parameters.count("max_motor_rpm")
                         ? std::stod(info_.hardware_parameters.at("max_motor_rpm"))
-                        : 5700.0;
+                        : 3000.0;
     left_inverted_  = info_.hardware_parameters.count("left_motor_inverted")
                         ? (info_.hardware_parameters.at("left_motor_inverted") == "true")
                         : false;
@@ -76,7 +78,6 @@ hardware_interface::CallbackReturn IgvcHardware::on_activate(
 {
     openSerial();
 
-    // Zero state
     for (int i = 0; i < 2; ++i) {
         hw_positions_[i]  = 0.0;
         hw_velocities_[i] = 0.0;
@@ -119,9 +120,8 @@ std::vector<hardware_interface::CommandInterface> IgvcHardware::export_command_i
 // ── Read: parse encoder feedback from Teensy ─────────────────────────────────
 
 hardware_interface::return_type IgvcHardware::read(
-    const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
+    const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-    // Drain serial RX buffer, parse complete lines
     char tmp[128];
     int n = readSerial(tmp, sizeof(tmp));
     for (int i = 0; i < n; ++i) {
@@ -129,14 +129,21 @@ hardware_interface::return_type IgvcHardware::read(
         if (c == '\n') {
             rx_buf_[rx_len_] = '\0';
             if (rx_len_ > 0 && (rx_buf_[0] == 'E' || rx_buf_[0] == 'e')) {
-                float motor_rpm_left = 0.0f, motor_rpm_right = 0.0f;
-                if (sscanf(rx_buf_ + 1, "%f %f", &motor_rpm_left, &motor_rpm_right) == 2) {
-                    // Apply motor inversion to encoder feedback
-                    if (left_inverted_)  motor_rpm_left  = -motor_rpm_left;
-                    if (right_inverted_) motor_rpm_right = -motor_rpm_right;
-                    // Convert motor RPM → wheel rad/s
-                    hw_velocities_[0] = (motor_rpm_left  / gear_ratio_) * TWO_PI_OVER_60;
-                    hw_velocities_[1] = (motor_rpm_right / gear_ratio_) * TWO_PI_OVER_60;
+                // Parse "E L<rpm> <pos> R<rpm> <pos>"
+                float rpm_l = 0.0f, pos_l = 0.0f, rpm_r = 0.0f, pos_r = 0.0f;
+                char *lp = strchr(rx_buf_, 'L'); if (!lp) lp = strchr(rx_buf_, 'l');
+                char *rp = strchr(rx_buf_, 'R'); if (!rp) rp = strchr(rx_buf_, 'r');
+                if (lp && sscanf(lp + 1, "%f %f", &rpm_l, &pos_l) >= 1 &&
+                    rp && sscanf(rp + 1, "%f %f", &rpm_r, &pos_r) >= 1) {
+                    // Apply motor inversion
+                    if (left_inverted_)  { rpm_l = -rpm_l; pos_l = -pos_l; }
+                    if (right_inverted_) { rpm_r = -rpm_r; pos_r = -pos_r; }
+                    // Motor RPM → wheel rad/s
+                    hw_velocities_[0] = (rpm_l / gear_ratio_) * TWO_PI_OVER_60;
+                    hw_velocities_[1] = (rpm_r / gear_ratio_) * TWO_PI_OVER_60;
+                    // Motor rotations → wheel radians
+                    hw_positions_[0] = (pos_l / gear_ratio_) * TWO_PI;
+                    hw_positions_[1] = (pos_r / gear_ratio_) * TWO_PI;
                 }
             }
             rx_len_ = 0;
@@ -144,11 +151,6 @@ hardware_interface::return_type IgvcHardware::read(
             rx_buf_[rx_len_++] = c;
         }
     }
-
-    // Integrate position from velocity
-    double dt = period.seconds();
-    hw_positions_[0] += hw_velocities_[0] * dt;
-    hw_positions_[1] += hw_velocities_[1] * dt;
 
     return hardware_interface::return_type::OK;
 }
@@ -158,24 +160,17 @@ hardware_interface::return_type IgvcHardware::read(
 hardware_interface::return_type IgvcHardware::write(
     const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-    // Convert wheel rad/s command → duty [-1, 1]
-    // max_wheel_rad_s = max_motor_rpm / gear_ratio * (2π/60)
-    double max_wheel_rad_s = (max_motor_rpm_ / gear_ratio_) * TWO_PI_OVER_60;
-
-    double duty_left  = hw_commands_[0] / max_wheel_rad_s;
-    double duty_right = hw_commands_[1] / max_wheel_rad_s;
+    // Convert wheel rad/s → motor RPM
+    double rpm_left  = (hw_commands_[0] / TWO_PI_OVER_60) * gear_ratio_;
+    double rpm_right = (hw_commands_[1] / TWO_PI_OVER_60) * gear_ratio_;
 
     // Apply motor inversion
-    if (left_inverted_)  duty_left  = -duty_left;
-    if (right_inverted_) duty_right = -duty_right;
-
-    // Clamp
-    duty_left  = std::max(-1.0, std::min(1.0, duty_left));
-    duty_right = std::max(-1.0, std::min(1.0, duty_right));
+    if (left_inverted_)  rpm_left  = -rpm_left;
+    if (right_inverted_) rpm_right = -rpm_right;
 
     // Send to Teensy
     char cmd[64];
-    snprintf(cmd, sizeof(cmd), "M %.4f %.4f\n", duty_left, duty_right);
+    snprintf(cmd, sizeof(cmd), "L%.0f R%.0f\n", rpm_left, rpm_right);
     writeSerial(cmd);
 
     return hardware_interface::return_type::OK;
