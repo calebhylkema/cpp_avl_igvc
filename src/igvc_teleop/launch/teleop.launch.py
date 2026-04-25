@@ -1,8 +1,9 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -18,6 +19,11 @@ def generate_launch_description():
         "launch", "control.launch.py"
     )
 
+    serial_port_arg = DeclareLaunchArgument(
+        "serial_port", default_value="/dev/ttyACM0",
+        description="Teensy USB serial port",
+    )
+
     # Keyboard → /diff_drive_controller/cmd_vel_unstamped
     teleop_node = Node(
         package="igvc_teleop",
@@ -31,9 +37,11 @@ def generate_launch_description():
     # ros2_control stack (hardware interface + diff_drive_controller)
     control = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(control_launch),
+        launch_arguments={"serial_port": LaunchConfiguration("serial_port")}.items(),
     )
 
     return LaunchDescription([
+        serial_port_arg,
         control,
         teleop_node,
     ])

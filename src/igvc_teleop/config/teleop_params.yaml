@@ -6,7 +6,7 @@ igvc_teleop_node:
 
     # Max velocities — must match diff_drive_controller limits
     max_linear_vel:  0.5    # m/s
-    max_angular_vel: 2.0    # rad/s
+    max_angular_vel: 1.9    # rad/s — matches diff_drive_controller
 
     # Speed mode levels (keys 1–4) — fraction of max velocity
     speed_levels: [0.25, 0.50, 0.75, 1.00]

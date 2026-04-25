@@ -110,14 +110,14 @@ controller_server:
       vy_max:  0.0
       wz_max:  1.9
 
-      ax_max:  3.0
-      ax_min: -3.0
-      ay_max:  3.0
-      az_max:  3.5
+      ax_max:  1.0
+      ax_min: -1.0
+      ay_max:  0.0
+      az_max:  3.0
 
       vx_std: 0.2
       vy_std: 0.0
-      wz_std: 0.4
+      wz_std: 0.2
 
       motion_model: "DiffDrive"
 
@@ -164,7 +164,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        threshold_to_consider: 0.5
+        threshold_to_consider: 0.0
 
       CostCritic:
         enabled: true
@@ -179,7 +179,7 @@ controller_server:
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 14.0
+        cost_weight: 10.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -250,7 +250,7 @@ local_costmap:
       width: 4
       height: 4
       resolution: 0.05
-      robot_radius: 0.35
+      robot_radius: 0.46
       update_frequency: 5.0
       publish_frequency: 2.0
       always_send_full_costmap: true
@@ -258,7 +258,7 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.55
+        inflation_radius: 0.65
         cost_scaling_factor: 3.0
 
 # ── Global Costmap (static layer + inflation only) ───────────────────────────
@@ -268,7 +268,7 @@ global_costmap:
       use_sim_time: false
       global_frame: "map"
       robot_base_frame: "base_link"
-      robot_radius: 0.35
+      robot_radius: 0.46
       resolution: 0.05
       track_unknown_space: true
       update_frequency: 1.0
@@ -282,7 +282,7 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.55
+        inflation_radius: 0.65
         cost_scaling_factor: 3.0
 
 # ── Map Server ────────────────────────────────────────────────────────────────
@@ -337,12 +337,12 @@ velocity_smoother:
     use_sim_time: false
     smoothing_frequency: 20.0
     scale_velocities: false
-    feedback: "OPEN_LOOP"
+    feedback: "CLOSED_LOOP"
     odom_topic: "/diff_drive_controller/odom"
     odom_duration: 0.1
     max_velocity:  [ 0.50,  0.0,  1.9]
     min_velocity:  [-0.35,  0.0, -1.9]
-    max_accel:     [ 2.50,  0.0,  3.2]
-    max_decel:     [-2.50,  0.0, -3.2]
+    max_accel:     [ 1.00,  0.0,  3.0]
+    max_decel:     [-1.00,  0.0, -3.0]
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0

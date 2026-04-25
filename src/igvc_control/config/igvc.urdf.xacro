@@ -5,13 +5,13 @@
   <xacro:arg name="serial_port" default="/dev/ttyACM0" />
 
   <!-- Drivetrain parameters -->
-  <xacro:property name="wheel_separation" value="0.508" />
+  <xacro:property name="wheel_separation" value="0.730" />
   <xacro:property name="wheel_radius"     value="0.0345" />
 
   <!-- Base link -->
   <link name="base_link">
     <visual>
-      <geometry><box size="0.6 0.5 0.2" /></geometry>
+      <geometry><box size="0.826 0.826 0.2" /></geometry>
     </visual>
   </link>
 
@@ -58,7 +58,7 @@
       <param name="gear_ratio">12.75</param>
       <param name="max_motor_rpm">3000</param>
       <param name="left_motor_inverted">false</param>
-      <param name="right_motor_inverted">true</param>
+      <param name="right_motor_inverted">false</param>
     </hardware>
 
     <joint name="left_wheel_joint">
