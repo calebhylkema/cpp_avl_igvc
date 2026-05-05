@@ -150,8 +150,8 @@ controller_server:
       iteration_count: 1         # optimisation iterations per control cycle
 
       # Velocity limits (m/s, rad/s) — tune to robot capability
-      vx_max:  0.50              # m/s forward max (conservative for IGVC)
-      vx_min: -0.35              # m/s reverse max
+      vx_max:  0.80              # m/s forward max
+      vx_min: -0.50              # m/s reverse max
       vy_max:  0.0               # diff drive has no lateral velocity
       wz_max:  1.9               # rad/s max angular
 
@@ -221,7 +221,7 @@ controller_server:
         cost_power: 1
         cost_weight: 3.81
         critical_cost: 300.0
-        consider_footprint: true
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
         trajectory_point_step: 2
@@ -430,8 +430,8 @@ velocity_smoother:
     odom_topic: "/diff_drive_controller/odom"
     odom_duration: 0.1
     # Must match MPPI and diff_drive_controller limits
-    max_velocity:  [ 0.50,  0.0,  1.9]   # [vx, vy, wz]
-    min_velocity:  [-0.35,  0.0, -1.9]
+    max_velocity:  [ 0.80,  0.0,  1.9]   # [vx, vy, wz]
+    min_velocity:  [-0.50,  0.0, -1.9]
     max_accel:     [ 1.00,  0.0,  3.0]
     max_decel:     [-1.00,  0.0, -3.0]
     deadband_velocity: [0.0, 0.0, 0.0]

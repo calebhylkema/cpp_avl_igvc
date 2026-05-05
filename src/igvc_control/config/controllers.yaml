@@ -14,7 +14,7 @@ diff_drive_controller:
     right_wheel_names: ["right_wheel_joint"]
 
     wheel_separation: 0.730
-    wheel_radius:     0.0345
+    wheel_radius:     0.0762
 
     # Publish odom at controller rate
     publish_rate: 50.0
@@ -28,9 +28,9 @@ diff_drive_controller:
 
     # Velocity limits — conservative for initial testing
     linear.x.has_velocity_limits:      true
-    linear.x.max_velocity:             0.5    # m/s
+    linear.x.max_velocity:             0.8    # m/s
     linear.x.has_acceleration_limits:  true
-    linear.x.max_acceleration:         1.0    # m/s^2
+    linear.x.max_acceleration:         2.0    # m/s^2
 
     angular.z.has_velocity_limits:     true
     angular.z.max_velocity:            1.9    # rad/s — matches MPPI and velocity_smoother

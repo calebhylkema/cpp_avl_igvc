@@ -4,18 +4,20 @@ from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
     pkg = get_package_share_directory('igvc_control')
+    desc_pkg = get_package_share_directory('igvc_description')
 
     serial_port_arg = DeclareLaunchArgument(
         'serial_port', default_value='/dev/ttyACM0',
         description='Teensy USB serial port')
 
     # Process xacro → URDF, passing serial_port arg through
-    xacro_file = os.path.join(pkg, 'config', 'igvc.urdf.xacro')
+    xacro_file = os.path.join(desc_pkg, 'urdf', 'igvc.urdf.xacro')
     serial_port = LaunchConfiguration('serial_port')
     robot_description = Command([
         'xacro ', xacro_file, ' serial_port:=', serial_port
@@ -27,7 +29,7 @@ def generate_launch_description():
     robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
-        parameters=[{'robot_description': robot_description}],
+        parameters=[{'robot_description': ParameterValue(robot_description, value_type=str)}],
     )
 
     # Controller manager (loads hardware interface + controllers)

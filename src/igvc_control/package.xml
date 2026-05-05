@@ -17,6 +17,7 @@
   <depend>joint_state_broadcaster</depend>
   <depend>robot_state_publisher</depend>
   <depend>xacro</depend>
+  <exec_depend>igvc_description</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

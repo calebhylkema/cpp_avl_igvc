@@ -16,7 +16,6 @@ firmware/*/.pio/
 # Claude Code
 .claude/
 CLAUDE.md
-HISTORY.md
 
 # OS
 .DS_Store

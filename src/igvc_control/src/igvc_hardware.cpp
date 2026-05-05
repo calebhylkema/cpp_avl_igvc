@@ -50,7 +50,6 @@ hardware_interface::CallbackReturn IgvcHardware::on_init(
         return hardware_interface::CallbackReturn::ERROR;
     }
 
-    // Read hardware parameters from URDF <ros2_control> tag
     serial_port_    = info_.hardware_parameters.count("serial_port")
                         ? info_.hardware_parameters.at("serial_port")
                         : "/dev/ttyACM0";
@@ -78,11 +77,24 @@ hardware_interface::CallbackReturn IgvcHardware::on_activate(
 {
     openSerial();
 
+    // Set SparkMAX PID gains (same as actuator_node)
+    const char *pid_cmds[] = {"KF0.000197\n", "KP0.0004\n", "KI0.0\n", "KD0.0\n"};
+    for (auto cmd : pid_cmds) {
+        writeSerial(cmd);
+        usleep(200000);
+    }
+    RCLCPP_INFO(logger_, "SparkMAX PID gains set");
+
     for (int i = 0; i < 2; ++i) {
         hw_positions_[i]  = 0.0;
         hw_velocities_[i] = 0.0;
         hw_commands_[i]   = 0.0;
+        fb_positions_[i]  = 0.0;
+        fb_velocities_[i] = 0.0;
     }
+
+    running_ = true;
+    reader_thread_ = std::thread(&IgvcHardware::readerThread, this);
 
     RCLCPP_INFO(logger_, "Activated");
     return hardware_interface::CallbackReturn::SUCCESS;
@@ -91,6 +103,9 @@ hardware_interface::CallbackReturn IgvcHardware::on_activate(
 hardware_interface::CallbackReturn IgvcHardware::on_deactivate(
     const rclcpp_lifecycle::State & /*previous_state*/)
 {
+    running_ = false;
+    if (reader_thread_.joinable()) reader_thread_.join();
+
     writeSerial("S\n");
     closeSerial();
     RCLCPP_INFO(logger_, "Deactivated — motors stopped");
@@ -117,41 +132,16 @@ std::vector<hardware_interface::CommandInterface> IgvcHardware::export_command_i
     return interfaces;
 }
 
-// ── Read: parse encoder feedback from Teensy ─────────────────────────────────
+// ── Read: copy latest feedback from reader thread ───────────────────────────
 
 hardware_interface::return_type IgvcHardware::read(
     const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-    char tmp[128];
-    int n = readSerial(tmp, sizeof(tmp));
-    for (int i = 0; i < n; ++i) {
-        char c = tmp[i];
-        if (c == '\n') {
-            rx_buf_[rx_len_] = '\0';
-            if (rx_len_ > 0 && (rx_buf_[0] == 'E' || rx_buf_[0] == 'e')) {
-                // Parse "E L<rpm> <pos> R<rpm> <pos>"
-                float rpm_l = 0.0f, pos_l = 0.0f, rpm_r = 0.0f, pos_r = 0.0f;
-                char *lp = strchr(rx_buf_, 'L'); if (!lp) lp = strchr(rx_buf_, 'l');
-                char *rp = strchr(rx_buf_, 'R'); if (!rp) rp = strchr(rx_buf_, 'r');
-                if (lp && sscanf(lp + 1, "%f %f", &rpm_l, &pos_l) >= 1 &&
-                    rp && sscanf(rp + 1, "%f %f", &rpm_r, &pos_r) >= 1) {
-                    // Apply motor inversion
-                    if (left_inverted_)  { rpm_l = -rpm_l; pos_l = -pos_l; }
-                    if (right_inverted_) { rpm_r = -rpm_r; pos_r = -pos_r; }
-                    // Motor RPM → wheel rad/s
-                    hw_velocities_[0] = (rpm_l / gear_ratio_) * TWO_PI_OVER_60;
-                    hw_velocities_[1] = (rpm_r / gear_ratio_) * TWO_PI_OVER_60;
-                    // Motor rotations → wheel radians
-                    hw_positions_[0] = (pos_l / gear_ratio_) * TWO_PI;
-                    hw_positions_[1] = (pos_r / gear_ratio_) * TWO_PI;
-                }
-            }
-            rx_len_ = 0;
-        } else if (rx_len_ < (int)(sizeof(rx_buf_) - 1)) {
-            rx_buf_[rx_len_++] = c;
-        }
-    }
-
+    std::lock_guard<std::mutex> lock(fb_mtx_);
+    hw_velocities_[0] = fb_velocities_[0];
+    hw_velocities_[1] = fb_velocities_[1];
+    hw_positions_[0]  = fb_positions_[0];
+    hw_positions_[1]  = fb_positions_[1];
     return hardware_interface::return_type::OK;
 }
 
@@ -160,20 +150,65 @@ hardware_interface::return_type IgvcHardware::read(
 hardware_interface::return_type IgvcHardware::write(
     const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-    // Convert wheel rad/s → motor RPM
     double rpm_left  = (hw_commands_[0] / TWO_PI_OVER_60) * gear_ratio_;
     double rpm_right = (hw_commands_[1] / TWO_PI_OVER_60) * gear_ratio_;
 
-    // Apply motor inversion
     if (left_inverted_)  rpm_left  = -rpm_left;
     if (right_inverted_) rpm_right = -rpm_right;
 
-    // Send to Teensy
     char cmd[64];
     snprintf(cmd, sizeof(cmd), "L%.0f R%.0f\n", rpm_left, rpm_right);
     writeSerial(cmd);
 
     return hardware_interface::return_type::OK;
+}
+
+// ── Background reader thread ────────────────────────────────────────────────
+
+void IgvcHardware::readerThread()
+{
+    char rx_buf[256];
+    int rx_len = 0;
+    char tmp[256];
+
+    while (running_) {
+        ssize_t n;
+        {
+            std::lock_guard<std::mutex> lock(serial_mtx_);
+            if (serial_fd_ < 0) { usleep(10000); continue; }
+            n = ::read(serial_fd_, tmp, sizeof(tmp));
+        }
+
+        if (n <= 0) {
+            usleep(1000);
+            continue;
+        }
+
+        for (int i = 0; i < n; ++i) {
+            char c = tmp[i];
+            if (c == '\n') {
+                rx_buf[rx_len] = '\0';
+                if (rx_len > 0 && (rx_buf[0] == 'E' || rx_buf[0] == 'e')) {
+                    float rpm_l = 0.0f, pos_l = 0.0f, rpm_r = 0.0f, pos_r = 0.0f;
+                    char *lp = strchr(rx_buf, 'L'); if (!lp) lp = strchr(rx_buf, 'l');
+                    char *rp = strchr(rx_buf, 'R'); if (!rp) rp = strchr(rx_buf, 'r');
+                    if (lp && sscanf(lp + 1, "%f %f", &rpm_l, &pos_l) >= 1 &&
+                        rp && sscanf(rp + 1, "%f %f", &rpm_r, &pos_r) >= 1) {
+                        if (left_inverted_)  { rpm_l = -rpm_l; pos_l = -pos_l; }
+                        if (right_inverted_) { rpm_r = -rpm_r; pos_r = -pos_r; }
+                        std::lock_guard<std::mutex> lock(fb_mtx_);
+                        fb_velocities_[0] = (rpm_l / gear_ratio_) * TWO_PI_OVER_60;
+                        fb_velocities_[1] = (rpm_r / gear_ratio_) * TWO_PI_OVER_60;
+                        fb_positions_[0] = (pos_l / gear_ratio_) * TWO_PI;
+                        fb_positions_[1] = (pos_r / gear_ratio_) * TWO_PI;
+                    }
+                }
+                rx_len = 0;
+            } else if (rx_len < (int)(sizeof(rx_buf) - 1)) {
+                rx_buf[rx_len++] = c;
+            }
+        }
+    }
 }
 
 // ── Serial helpers ───────────────────────────────────────────────────────────
@@ -202,6 +237,7 @@ void IgvcHardware::openSerial()
 
 void IgvcHardware::closeSerial()
 {
+    std::lock_guard<std::mutex> lock(serial_mtx_);
     if (serial_fd_ >= 0) {
         ::close(serial_fd_);
         serial_fd_ = -1;
@@ -210,16 +246,10 @@ void IgvcHardware::closeSerial()
 
 void IgvcHardware::writeSerial(const std::string & data)
 {
+    std::lock_guard<std::mutex> lock(serial_mtx_);
     if (serial_fd_ >= 0) {
         ::write(serial_fd_, data.c_str(), data.size());
     }
-}
-
-int IgvcHardware::readSerial(char * buf, size_t len)
-{
-    if (serial_fd_ < 0) return 0;
-    ssize_t n = ::read(serial_fd_, buf, len);
-    return (n > 0) ? static_cast<int>(n) : 0;
 }
 
 }  // namespace igvc_control
